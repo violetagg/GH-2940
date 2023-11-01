@@ -53,7 +53,7 @@ class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsReco
 	@Override
 	public void recordTlsHandshakeTime(SocketAddress remoteAddress, Duration time, String status) {
 		String address = reactor.netty.Metrics.formatSocketAddress(remoteAddress);
-		address = address.split(":", 1)[0];
+		address = address.split(":", 2)[0];
 		Timer timer = getTlsHandshakeTimer(name + TLS_HANDSHAKE_TIME, address, status);
 		if (timer != null) {
 			timer.record(time);
