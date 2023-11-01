@@ -1,8 +1,8 @@
 package com.example.gh2940;
 
 import io.micrometer.core.instrument.*;
+import io.micrometer.core.instrument.noop.NoopMeter;
 import reactor.netty.channel.MeterKey;
-import reactor.netty.http.MicrometerHttpMetricsRecorder;
 import reactor.netty.http.server.HttpServerMetricsRecorder;
 import reactor.netty.internal.util.MapUtils;
 import reactor.util.annotation.Nullable;
@@ -13,9 +13,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.LongAdder;
 
-import static reactor.netty.Metrics.REGISTRY;
+import static reactor.netty.Metrics.*;
 
-class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRecorder implements HttpServerMetricsRecorder {
+class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsRecorder {
 	private static final String DATA_RECEIVED = ".data.received";
 	private static final String DATA_RECEIVED_TIME = ".data.received.time";
 	private static final String DATA_SENT = ".data.sent";
@@ -34,15 +34,18 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	private final ConcurrentMap<String, LongAdder> activeConnectionsCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, LongAdder> activeStreamsCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, DistributionSummary> dataReceivedCache = new ConcurrentHashMap<>();
+	private final ConcurrentMap<MeterKey, Timer> dataReceivedTimeCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, DistributionSummary> dataSentCache = new ConcurrentHashMap<>();
+	private final ConcurrentMap<MeterKey, Timer> dataSentTimeCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<String, Counter> errorsCache = new ConcurrentHashMap<>();
+	private final ConcurrentMap<MeterKey, Timer> responseTimeCache = new ConcurrentHashMap<>();
+	private final ConcurrentMap<MeterKey, Timer> tlsHandshakeTimeCache = new ConcurrentHashMap<>();
 
 
 	final String name;
 	final String protocol;
 
 	CustomMicrometerHttpServerMetricsRecorder() {
-		super(HTTP_SERVER_PREFIX, PROTOCOL_VALUE_HTTP);
 		this.name = HTTP_SERVER_PREFIX;
 		this.protocol = PROTOCOL_VALUE_HTTP;
 	}
@@ -61,7 +64,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	public void recordDataReceivedTime(String uri, String method, Duration time) {
 		MeterKey meterKey = new MeterKey(uri, null, method, null);
 		Timer dataReceivedTime = MapUtils.computeIfAbsent(dataReceivedTimeCache, meterKey,
-				key -> filter(Timer.builder(name() + DATA_RECEIVED_TIME)
+				key -> filter(Timer.builder(name + DATA_RECEIVED_TIME)
 						.tags(CustomHttpServerMeters.DataReceivedTimeTags.URI.asString(), uri,
 								CustomHttpServerMeters.DataReceivedTimeTags.METHOD.asString(), method)
 						.register(REGISTRY)));
@@ -74,7 +77,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	public void recordDataSentTime(String uri, String method, String status, Duration time) {
 		MeterKey meterKey = new MeterKey(uri, null, method, status);
 		Timer dataSentTime = MapUtils.computeIfAbsent(dataSentTimeCache, meterKey,
-				key -> filter(Timer.builder(name() + DATA_SENT_TIME)
+				key -> filter(Timer.builder(name + DATA_SENT_TIME)
 						.tags(CustomHttpServerMeters.DataSentTimeTags.URI.asString(), uri,
 								CustomHttpServerMeters.DataSentTimeTags.METHOD.asString(), method,
 								CustomHttpServerMeters.DataSentTimeTags.STATUS.asString(), status)
@@ -86,7 +89,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 
 	@Override
 	public void recordResponseTime(String uri, String method, String status, Duration time) {
-		Timer responseTime = getResponseTimeTimer(name() + RESPONSE_TIME, uri, method, status);
+		Timer responseTime = getResponseTimeTimer(name + RESPONSE_TIME, uri, method, status);
 		if (responseTime != null) {
 			responseTime.record(time);
 		}
@@ -104,7 +107,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	@Override
 	public void recordDataReceived(SocketAddress remoteAddress, String uri, long bytes) {
 		DistributionSummary dataReceived = MapUtils.computeIfAbsent(dataReceivedCache, uri,
-				key -> filter(DistributionSummary.builder(name() + DATA_RECEIVED)
+				key -> filter(DistributionSummary.builder(name + DATA_RECEIVED)
 						.baseUnit(CustomHttpServerMeters.HTTP_SERVER_DATA_RECEIVED.getBaseUnit())
 						.tags(CustomHttpServerMeters.HttpServerMetersTags.URI.asString(), uri)
 						.register(REGISTRY)));
@@ -116,7 +119,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	@Override
 	public void recordDataSent(SocketAddress remoteAddress, String uri, long bytes) {
 		DistributionSummary dataSent = MapUtils.computeIfAbsent(dataSentCache, uri,
-				key -> filter(DistributionSummary.builder(name() + DATA_SENT)
+				key -> filter(DistributionSummary.builder(name + DATA_SENT)
 						.baseUnit(CustomHttpServerMeters.HTTP_SERVER_DATA_SENT.getBaseUnit())
 						.tags(CustomHttpServerMeters.HttpServerMetersTags.URI.asString(), uri)
 						.register(REGISTRY)));
@@ -128,7 +131,7 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 	@Override
 	public void incrementErrorsCount(SocketAddress remoteAddress, String uri) {
 		Counter errors = MapUtils.computeIfAbsent(errorsCache, uri,
-				key -> filter(Counter.builder(name() + ERRORS)
+				key -> filter(Counter.builder(name + ERRORS)
 						.tags(CustomHttpServerMeters.HttpServerMetersTags.URI.asString(), uri)
 						.register(REGISTRY)));
 		if (errors != null) {
@@ -219,5 +222,24 @@ class CustomMicrometerHttpServerMetricsRecorder extends MicrometerHttpMetricsRec
 									.register(REGISTRY));
 					return gauge != null ? activeConnectionsAdder : null;
 				});
+	}
+
+	@Nullable
+	private final Timer getTlsHandshakeTimer(String name, String address, String status) {
+		MeterKey meterKey = new MeterKey(null, address, null, status);
+		return MapUtils.computeIfAbsent(tlsHandshakeTimeCache, meterKey,
+				key -> filter(Timer.builder(name)
+						.tags(REMOTE_ADDRESS, address, STATUS, status)
+						.register(REGISTRY)));
+	}
+
+	@Nullable
+	private static <M extends Meter> M filter(M meter) {
+		if (meter instanceof NoopMeter) {
+			return null;
+		}
+		else {
+			return meter;
+		}
 	}
 }
