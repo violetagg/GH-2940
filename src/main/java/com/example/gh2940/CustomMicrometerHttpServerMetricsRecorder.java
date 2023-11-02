@@ -40,6 +40,8 @@ class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsReco
 	private final ConcurrentMap<String, Counter> errorsCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<MeterKey, Timer> responseTimeCache = new ConcurrentHashMap<>();
 	private final ConcurrentMap<MeterKey, Timer> tlsHandshakeTimeCache = new ConcurrentHashMap<>();
+	private final ConcurrentMap<String, LongAdder> totalConnectionsCache = new ConcurrentHashMap<>();
+	private final LongAdder totalConnectionsAdder = new LongAdder();
 
 
 	final String name;
@@ -140,6 +142,22 @@ class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsReco
 	}
 
 	@Override
+	public void recordServerConnectionOpened(SocketAddress serverAddress) {
+		LongAdder totalConnectionAdder = getTotalConnectionsAdder(serverAddress);
+		if (totalConnectionAdder != null) {
+			totalConnectionAdder.increment();
+		}
+	}
+
+	@Override
+	public void recordServerConnectionClosed(SocketAddress serverAddress) {
+		LongAdder totalConnectionAdder = getTotalConnectionsAdder(serverAddress);
+		if (totalConnectionAdder != null) {
+			totalConnectionAdder.decrement();
+		}
+	}
+
+	@Override
 	public void recordServerConnectionActive(SocketAddress localAddress) {
 		LongAdder adder = getServerConnectionAdder(localAddress);
 		if (adder != null) {
@@ -197,12 +215,24 @@ class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsReco
 	}
 
 	@Nullable
+	private LongAdder getTotalConnectionsAdder(SocketAddress serverAddress) {
+		String address = reactor.netty.Metrics.formatSocketAddress(serverAddress);
+		return MapUtils.computeIfAbsent(totalConnectionsCache, address,
+				key -> {
+					Gauge gauge = filter(Gauge.builder(name + ".connections.total", totalConnectionsAdder, LongAdder::longValue)
+							.tags("uri", protocol, "local.address", address)
+							.register(REGISTRY));
+					return gauge != null ? totalConnectionsAdder : null;
+				});
+	}
+
+	@Nullable
 	private LongAdder getActiveStreamsAdder(SocketAddress localAddress) {
 		String address = reactor.netty.Metrics.formatSocketAddress(localAddress);
 		return MapUtils.computeIfAbsent(activeStreamsCache, address,
 				key -> {
 					Gauge gauge = filter(
-							Gauge.builder(CustomHttpServerMeters.STREAMS_ACTIVE.getName(), activeStreamsAdder, LongAdder::longValue)
+							Gauge.builder(name + ".streams.active", activeStreamsAdder, LongAdder::longValue)
 									.tags(CustomHttpServerMeters.StreamsActiveTags.URI.asString(), PROTOCOL_VALUE_HTTP,
 											CustomHttpServerMeters.StreamsActiveTags.LOCAL_ADDRESS.asString(), address)
 									.register(REGISTRY));
@@ -216,7 +246,7 @@ class CustomMicrometerHttpServerMetricsRecorder implements HttpServerMetricsReco
 		return MapUtils.computeIfAbsent(activeConnectionsCache, address,
 				key -> {
 					Gauge gauge = filter(
-							Gauge.builder(CustomHttpServerMeters.CONNECTIONS_ACTIVE.getName(), activeConnectionsAdder, LongAdder::longValue)
+							Gauge.builder(name + ".connections.active", activeConnectionsAdder, LongAdder::longValue)
 									.tags(CustomHttpServerMeters.ConnectionsActiveTags.URI.asString(), PROTOCOL_VALUE_HTTP,
 											CustomHttpServerMeters.ConnectionsActiveTags.LOCAL_ADDRESS.asString(), address)
 									.register(REGISTRY));
